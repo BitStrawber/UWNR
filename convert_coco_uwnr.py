@@ -144,7 +144,7 @@ def main():
     img_out_dir = os.path.join(args.output_dir, 'images')
     os.makedirs(img_out_dir, exist_ok=True)
 
-    # 加载模型
+    # 加载模型到主GPU
     main_device = torch.device(f'cuda:{gpu_ids[0]}')
     print(f'Loading UWNR model from {args.uwnr_model} ...')
     netG = load_uwnr_generator(args.uwnr_model, args.uwnr_dir, main_device)
@@ -154,15 +154,11 @@ def main():
         print('Loading MiDaS for on-the-fly depth estimation...')
         midas_model, midas_transform = load_midas(main_device)
 
-    # 多GPU并行
-    if num_gpus > 1:
-        netG = torch.nn.DataParallel(netG, device_ids=list(range(num_gpus)))
-        if midas_model is not None:
-            midas_model = torch.nn.DataParallel(midas_model, device_ids=list(range(num_gpus)))
-
     netG.to(main_device)
+    netG.eval()
     if midas_model is not None:
         midas_model.to(main_device)
+        midas_model.eval()
 
     skipped = 0
     processed = 0
@@ -174,11 +170,9 @@ def main():
         if os.path.exists(dst_path):
             continue
 
-        # 轮流使用GPU
-        device = torch.device(f'cuda:{gpu_ids[i % num_gpus]}')
-
+        # 所有计算在主GPU上进行
         result = process_single_image(
-            src_path, netG, device, args.size,
+            src_path, netG, main_device, args.size,
             midas_model=midas_model,
             midas_transform=midas_transform,
             depth_dir=args.depth_dir
