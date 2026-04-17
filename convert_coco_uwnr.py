@@ -122,17 +122,23 @@ def main():
     parser.add_argument('--uwnr-model', required=True)
     parser.add_argument('--depth-dir', default=None)
     parser.add_argument('--size', type=int, default=256)
-    parser.add_argument('--gpu', default='0', help='GPU IDs, comma-separated, e.g., "0,1"')
+    parser.add_argument('--gpu', default='0', help='GPU ID, e.g., "0" or "6"')
+    parser.add_argument('--start', type=int, default=0, help='Start index')
+    parser.add_argument('--end', type=int, default=None, help='End index')
     args = parser.parse_args()
 
-    gpu_ids = args.gpu.split(',')
-    num_gpus = len(gpu_ids)
-    print(f'Using {num_gpus} GPUs: {gpu_ids}')
+    gpu_id = args.gpu.split(',')[0]  # 只用第一个GPU
+    main_device = torch.device(f'cuda:{gpu_id}')
+    print(f'Using GPU: {gpu_id}')
 
     with open(args.ann, 'r') as f:
         coco = json.load(f)
     images = coco['images']
-    print(f'Images to process: {len(images)}')
+    if args.end is not None:
+        images = images[args.start:args.end]
+    else:
+        images = images[args.start:]
+    print(f'Images to process: {len(images)} (from {args.start} to {args.end})')
 
     ann_out_dir = os.path.join(args.output_dir, 'annotations')
     os.makedirs(ann_out_dir, exist_ok=True)
