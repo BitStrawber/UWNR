@@ -122,10 +122,12 @@ def main():
     parser.add_argument('--uwnr-model', required=True)
     parser.add_argument('--depth-dir', default=None)
     parser.add_argument('--size', type=int, default=256)
-    parser.add_argument('--device', default='cuda:0')
+    parser.add_argument('--gpu', default='0', help='GPU IDs, comma-separated, e.g., "0,1"')
     args = parser.parse_args()
 
-    device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
+    gpu_ids = args.gpu.split(',')
+    num_gpus = len(gpu_ids)
+    print(f'Using {num_gpus} GPUs: {gpu_ids}')
 
     with open(args.ann, 'r') as f:
         coco = json.load(f)
@@ -142,15 +144,21 @@ def main():
     img_out_dir = os.path.join(args.output_dir, 'images')
     os.makedirs(img_out_dir, exist_ok=True)
 
-    print(f'Loading UWNR model from {args.uwnr_model} ...')
-    netG = load_uwnr_generator(args.uwnr_model, args.uwnr_dir, device)
+    # 多GPU并行
+    if num_gpus > 1:
+        netG = torch.nn.DataParallel(netG, device_ids=list(range(num_gpus)))
+        if midas_model is not None:
+            midas_model = torch.nn.DataParallel(midas_model, device_ids=list(range(num_gpus)))
+        main_device = torch.device(f'cuda:{gpu_ids[0]}')
+    else:
+        main_device = torch.device(f'cuda:{gpu_ids[0]}')
 
-    midas_model, midas_transform = None, None
-    if args.depth_dir is None:
-        print('Loading MiDaS for on-the-fly depth estimation...')
-        midas_model, midas_transform = load_midas(device)
+    netG.to(main_device)
+    if midas_model is not None:
+        midas_model.to(main_device)
 
     skipped = 0
+    processed = 0
     for i, img_info in enumerate(tqdm(images, desc='UWNR converting')):
         filename = img_info['file_name']
         src_path = os.path.join(args.img_dir, filename)
@@ -158,6 +166,9 @@ def main():
 
         if os.path.exists(dst_path):
             continue
+
+        # 轮流使用GPU
+        device = torch.device(f'cuda:{gpu_ids[i % num_gpus]}')
 
         result = process_single_image(
             src_path, netG, device, args.size,
