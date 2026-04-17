@@ -144,14 +144,21 @@ def main():
     img_out_dir = os.path.join(args.output_dir, 'images')
     os.makedirs(img_out_dir, exist_ok=True)
 
+    # 加载模型
+    main_device = torch.device(f'cuda:{gpu_ids[0]}')
+    print(f'Loading UWNR model from {args.uwnr_model} ...')
+    netG = load_uwnr_generator(args.uwnr_model, args.uwnr_dir, main_device)
+
+    midas_model, midas_transform = None, None
+    if args.depth_dir is None:
+        print('Loading MiDaS for on-the-fly depth estimation...')
+        midas_model, midas_transform = load_midas(main_device)
+
     # 多GPU并行
     if num_gpus > 1:
         netG = torch.nn.DataParallel(netG, device_ids=list(range(num_gpus)))
         if midas_model is not None:
             midas_model = torch.nn.DataParallel(midas_model, device_ids=list(range(num_gpus)))
-        main_device = torch.device(f'cuda:{gpu_ids[0]}')
-    else:
-        main_device = torch.device(f'cuda:{gpu_ids[0]}')
 
     netG.to(main_device)
     if midas_model is not None:
