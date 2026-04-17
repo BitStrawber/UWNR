@@ -1,26 +1,15 @@
-"""Convert clean COCO images to underwater images using UWNR.
-
-Usage:
-    python tools/convert_coco_uwnr.py \
-        --ann /path/to/instances_train50k.json \
-        --img-dir /path/to/train2017 \
-        --output-dir /path/to/coco_uwnr \
-        --uwnr-dir /path/to/UWNR \
-        --uwnr-model /path/to/uwnr_epoch200.pth \
-        [--depth-dir /path/to/depth_maps]
-"""
+"""Convert clean COCO images to underwater images using UWNR - 与官方test.py完全一致"""
 import argparse
 import os
 import sys
 import json
 import shutil
 import cv2
-
-# Fix: Ensure os is available (already imported above)
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as transforms
+from PIL import Image
 from tqdm import tqdm
 
 
@@ -40,9 +29,15 @@ def load_uwnr_generator(model_path, uwnr_dir, device):
     return netG
 
 
-def _compute_a_map(img_rgb):
-    from myutils.dcp import MutiScaleLuminanceEstimation
-    return MutiScaleLuminanceEstimation(img_rgb)
+def _compute_a_map(img_pil):
+    """与官方dataloader完全一致的A_map计算"""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'myutils'))
+    from myutils import dcp
+    # 与官方一致: dcp.MutiScaleLuminanceEstimation(np.uint8(np.array(data)))
+    A_map = dcp.MutiScaleLuminanceEstimation(np.uint8(np.array(img_pil)))
+    # 与官方一致: tfs.ToTensor()(np.float32(A_map))/255
+    A_map_tensor = transforms.ToTensor()(np.float32(A_map)) / 255.0
+    return A_map_tensor
 
 
 def load_midas(device):
@@ -55,14 +50,16 @@ def load_midas(device):
     return midas, transform
 
 
-def estimate_depth(img_np, midas_model, midas_transform, device):
-    img_rgb = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB)
+def estimate_depth(img_pil, midas_model, midas_transform, device):
+    """Estimate depth from PIL image using MiDaS"""
+    img_np = np.array(img_pil)
+    img_rgb = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
     input_batch = midas_transform(img_rgb).to(device)
     with torch.no_grad():
         prediction = midas_model(input_batch)
         prediction = F.interpolate(
             prediction.unsqueeze(1),
-            size=img_np.shape[:2],
+            size=(img_pil.size[1], img_pil.size[0]),
             mode="bicubic",
             align_corners=False,
         ).squeeze()
@@ -73,48 +70,56 @@ def estimate_depth(img_np, midas_model, midas_transform, device):
 
 def process_single_image(img_path, netG, device, size, midas_model=None,
                          midas_transform=None, depth_dir=None):
-    img = cv2.imread(img_path)
-    if img is None:
-        return None
-    h_orig, w_orig = img.shape[:2]
-
-    img_resized = cv2.resize(img, (size, size))
-    img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-
-    A_map = _compute_a_map(img_rgb)
-    # A_map需要是3通道（与官方实现一致）
-    if len(A_map.shape) == 2:
-        A_map = np.stack([A_map, A_map, A_map], axis=2)
-    A_map_tensor = transforms.ToTensor()(np.float32(A_map) / 255.0)
-
+    """处理单张图像，与官方test.py流程一致"""
+    # 与官方一致: PIL打开图像
+    img_pil = Image.open(img_path).convert("RGB")
+    h_orig, w_orig = img_pil.size[1], img_pil.size[0]
+    
+    # Resize（与官方一致）
+    img_pil_resized = transforms.Resize([size, size])(img_pil)
+    
+    # 计算A_map（与官方dataloader一致）
+    A_map_tensor = _compute_a_map(img_pil_resized)
+    
+    # data转tensor（与官方一致: tfs.ToTensor()(data)）
+    img_tensor = transforms.ToTensor()(img_pil_resized)
+    
+    # Get depth map
     basename = os.path.splitext(os.path.basename(img_path))[0]
     if depth_dir and os.path.exists(os.path.join(depth_dir, basename + '.png')):
-        depth = cv2.imread(os.path.join(depth_dir, basename + '.png'), cv2.IMREAD_GRAYSCALE)
-        depth = cv2.resize(depth, (size, size)).astype(np.float32) / 255.0
+        depth_pil = Image.open(os.path.join(depth_dir, basename + '.png')).convert("L")
+        depth_pil = transforms.Resize([size, size])(depth_pil)
+        depth_tensor = transforms.ToTensor()(depth_pil)
     elif depth_dir and os.path.exists(os.path.join(depth_dir, basename + '.npy')):
         depth = np.load(os.path.join(depth_dir, basename + '.npy'))
-        depth = cv2.resize(depth, (size, size)).astype(np.float32)
-        if depth.max() > 1.0:
-            depth = depth / 255.0
+        depth = cv2.resize(depth, (size, size))
+        depth = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8)
+        depth_tensor = torch.from_numpy(depth).unsqueeze(0)
     elif midas_model is not None:
-        depth = estimate_depth(img_resized, midas_model, midas_transform, device)
+        depth = estimate_depth(img_pil_resized, midas_model, midas_transform, device)
+        depth_tensor = torch.from_numpy(depth).unsqueeze(0)
     else:
-        depth = np.ones((size, size), dtype=np.float32) * 0.5
-
-    depth_tensor = torch.from_numpy(depth).unsqueeze(0)
-    img_tensor = transforms.ToTensor()(img_rgb)
-
-    x = torch.cat([img_tensor, depth_tensor, A_map_tensor], dim=0).unsqueeze(0).to(device)
-
+        depth_tensor = torch.ones(1, size, size) * 0.5
+    
+    # 拼接（与官方一致: torch.cat([gt,depth_map,A_map],1)）
+    x = torch.cat([img_tensor.unsqueeze(0), depth_tensor.unsqueeze(0), A_map_tensor.unsqueeze(0)], dim=1).to(device)
+    
     with torch.no_grad():
         output = netG(x)
-
-    output = output.squeeze(0).cpu()
-    output = (output + 1.0) / 2.0
+    
+    # 与官方一致: save_image(g1_output, ..., normalize=False)
+    # 注意：save_image的normalize=False表示不再次归一化，假设输入已经是[0,1]
+    # 但Tanh输出是[-1,1]，所以需要先转换到[0,1]
+    output = output.squeeze(0)
+    output = (output + 1.0) / 2.0  # [-1,1] -> [0,1]
     output = torch.clamp(output, 0, 1)
-    output_np = (output.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
-
-    output_np = cv2.resize(output_np, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
+    
+    # 转回PIL并resize到原尺寸
+    output_pil = transforms.ToPILImage()(output)
+    output_pil = output_pil.resize((w_orig, h_orig), Image.BILINEAR)
+    
+    # 转numpy用于保存
+    output_np = np.array(output_pil)
     return output_np
 
 
@@ -127,20 +132,21 @@ def main():
     parser.add_argument('--uwnr-model', required=True)
     parser.add_argument('--depth-dir', default=None)
     parser.add_argument('--size', type=int, default=256)
-    parser.add_argument('--gpu', default='0', help='GPU ID, e.g., "0" or "6"')
-    parser.add_argument('--start', type=int, default=0, help='Start index')
-    parser.add_argument('--end', type=int, default=None, help='End index')
+    parser.add_argument('--gpu', default='0', help='GPU ID')
+    parser.add_argument('--start', type=int, default=0)
+    parser.add_argument('--end', type=int, default=None)
     args = parser.parse_args()
-
-    gpu_id = args.gpu.split(',')[0]  # 只用第一个GPU
-    # 如果使用了CUDA_VISIBLE_DEVICES， PyTorch中总是cuda:0
+    
+    # 设备设置
     if os.environ.get('CUDA_VISIBLE_DEVICES'):
         main_device = torch.device('cuda:0')
-        print(f'Using GPU: {gpu_id} (via CUDA_VISIBLE_DEVICES={os.environ.get("CUDA_VISIBLE_DEVICES")})')
+        print(f'Using GPU via CUDA_VISIBLE_DEVICES={os.environ.get("CUDA_VISIBLE_DEVICES")}')
     else:
+        gpu_id = args.gpu.split(',')[0]
         main_device = torch.device(f'cuda:{gpu_id}')
         print(f'Using GPU: {gpu_id}')
-
+    
+    # 加载标注
     with open(args.ann, 'r') as f:
         coco = json.load(f)
     images = coco['images']
@@ -149,57 +155,52 @@ def main():
     else:
         images = images[args.start:]
     print(f'Images to process: {len(images)} (from {args.start} to {args.end})')
-
+    
+    # 创建输出目录
     ann_out_dir = os.path.join(args.output_dir, 'annotations')
     os.makedirs(ann_out_dir, exist_ok=True)
     ann_out = os.path.join(ann_out_dir, os.path.basename(args.ann))
     if not os.path.exists(ann_out):
         shutil.copy2(args.ann, ann_out)
         print(f'Copied annotation to {ann_out}')
-
+    
     img_out_dir = os.path.join(args.output_dir, 'images')
     os.makedirs(img_out_dir, exist_ok=True)
-
-    # 加载模型到主GPU（使用前面已定义的main_device）
+    
+    # 加载模型
     print(f'Loading UWNR model from {args.uwnr_model} ...')
     netG = load_uwnr_generator(args.uwnr_model, args.uwnr_dir, main_device)
-
+    
     midas_model, midas_transform = None, None
     if args.depth_dir is None:
         print('Loading MiDaS for on-the-fly depth estimation...')
         midas_model, midas_transform = load_midas(main_device)
-
-    netG.to(main_device)
-    netG.eval()
-    if midas_model is not None:
-        midas_model.to(main_device)
-        midas_model.eval()
-
+    
+    # 处理图像
     skipped = 0
-    processed = 0
     for i, img_info in enumerate(tqdm(images, desc='UWNR converting')):
         filename = img_info['file_name']
         src_path = os.path.join(args.img_dir, filename)
         dst_path = os.path.join(img_out_dir, filename)
-
+        
         if os.path.exists(dst_path):
             continue
-
-        # 所有计算在主GPU上进行
+        
         result = process_single_image(
             src_path, netG, main_device, args.size,
             midas_model=midas_model,
             midas_transform=midas_transform,
             depth_dir=args.depth_dir
         )
-
+        
         if result is None:
             print(f'Warning: failed to read {src_path}')
             skipped += 1
             continue
-
-        cv2.imwrite(dst_path, cv2.cvtColor(result, cv2.COLOR_RGB2BGR))
-
+        
+        # 用PIL保存（与官方一致）
+        Image.fromarray(result).save(dst_path)
+    
     print(f'Done. Processed: {len(images) - skipped}, Skipped: {skipped}')
     print(f'Output: {img_out_dir}')
 
