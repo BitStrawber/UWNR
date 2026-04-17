@@ -53,7 +53,7 @@ def MutiScaleLuminanceEstimation(img):
     sigma_list  = [15,60,90]
     w,h,c = img.shape
     img = cv2.resize(img,dsize=None,fx=0.3,fy=0.3)
-    Luminance = np.ones_like(img).astype(np.float)
+    Luminance = np.ones_like(img).astype(np.float64)
     for sigma in sigma_list:
         Luminance1 = np.log10(cv2.GaussianBlur(img, (0,0), sigma))
         Luminance1 = np.clip(Luminance1,0,255)
