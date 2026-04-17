@@ -82,6 +82,9 @@ def process_single_image(img_path, netG, device, size, midas_model=None,
     img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
 
     A_map = _compute_a_map(img_rgb)
+    # A_map需要是3通道（与官方实现一致）
+    if len(A_map.shape) == 2:
+        A_map = np.stack([A_map, A_map, A_map], axis=2)
     A_map_tensor = transforms.ToTensor()(np.float32(A_map) / 255.0)
 
     basename = os.path.splitext(os.path.basename(img_path))[0]
