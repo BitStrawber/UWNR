@@ -150,8 +150,7 @@ def main():
     img_out_dir = os.path.join(args.output_dir, 'images')
     os.makedirs(img_out_dir, exist_ok=True)
 
-    # 加载模型到主GPU
-    main_device = torch.device(f'cuda:{gpu_ids[0]}')
+    # 加载模型到主GPU（使用前面已定义的main_device）
     print(f'Loading UWNR model from {args.uwnr_model} ...')
     netG = load_uwnr_generator(args.uwnr_model, args.uwnr_dir, main_device)
 
