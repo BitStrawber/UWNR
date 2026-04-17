@@ -47,17 +47,20 @@ def main():
     # 2. Resize (与官方一致)
     img_pil_resized = transforms.Resize([args.size, args.size])(img_pil)
     
-    # 3. 转Tensor (与官方一致: transforms.ToTensor())
+    # 3. 转Tensor并归一化到[-1, 1] (关键修复)
     img_tensor = transforms.ToTensor()(img_pil_resized).unsqueeze(0)
+    img_tensor = img_tensor * 2 - 1  # [0,1] -> [-1,1]
     
     # 4. 加载深度图 (与官方一致: PIL打开L模式)
     depth_pil = Image.open(args.depth).convert("L")
     depth_pil = transforms.Resize([args.size, args.size])(depth_pil)
     depth_tensor = transforms.ToTensor()(depth_pil).unsqueeze(0)
+    depth_tensor = depth_tensor * 2 - 1  # [0,1] -> [-1,1]
     
     # 5. 计算A_map (与官方一致)
     A_map = dcp.MutiScaleLuminanceEstimation(np.uint8(np.array(img_pil_resized)))
     A_map_tensor = transforms.ToTensor()(np.float32(A_map)) / 255.0
+    A_map_tensor = A_map_tensor * 2 - 1  # [0,1] -> [-1,1]
     
     # 6. 拼接 (与官方一致: [img, depth, A_map])
     x = torch.cat([img_tensor, depth_tensor, A_map_tensor.unsqueeze(0)], dim=1).to(device)
