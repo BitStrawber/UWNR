@@ -15,6 +15,8 @@ import sys
 import json
 import shutil
 import cv2
+
+# Fix: Ensure os is available (already imported above)
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -128,8 +130,13 @@ def main():
     args = parser.parse_args()
 
     gpu_id = args.gpu.split(',')[0]  # 只用第一个GPU
-    main_device = torch.device(f'cuda:{gpu_id}')
-    print(f'Using GPU: {gpu_id}')
+    # 如果使用了CUDA_VISIBLE_DEVICES， PyTorch中总是cuda:0
+    if os.environ.get('CUDA_VISIBLE_DEVICES'):
+        main_device = torch.device('cuda:0')
+        print(f'Using GPU: {gpu_id} (via CUDA_VISIBLE_DEVICES={os.environ.get("CUDA_VISIBLE_DEVICES")})')
+    else:
+        main_device = torch.device(f'cuda:{gpu_id}')
+        print(f'Using GPU: {gpu_id}')
 
     with open(args.ann, 'r') as f:
         coco = json.load(f)
