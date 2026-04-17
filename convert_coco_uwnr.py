@@ -37,7 +37,6 @@ def _compute_a_map(img_pil):
     A_map = dcp.MutiScaleLuminanceEstimation(np.uint8(np.array(img_pil)))
     # 与官方一致: tfs.ToTensor()(np.float32(A_map))/255，然后归一化到[-1,1]
     A_map_tensor = transforms.ToTensor()(np.float32(A_map)) / 255.0
-    A_map_tensor = A_map_tensor * 2 - 1  # [0,1] -> [-1,1]
     return A_map_tensor
 
 
@@ -83,24 +82,24 @@ def process_single_image(img_path, netG, device, size, midas_model=None,
     A_map_tensor = _compute_a_map(img_pil_resized)
     
     # data转tensor（与官方一致: tfs.ToTensor()(data)），归一化到[-1,1]
-    img_tensor = transforms.ToTensor()(img_pil_resized) * 2 - 1  # [0,1] -> [-1,1]
+    img_tensor = transforms.ToTensor()(img_pil_resized)
     
     # Get depth map
     basename = os.path.splitext(os.path.basename(img_path))[0]
     if depth_dir and os.path.exists(os.path.join(depth_dir, basename + '.png')):
         depth_pil = Image.open(os.path.join(depth_dir, basename + '.png')).convert("L")
         depth_pil = transforms.Resize([size, size])(depth_pil)
-        depth_tensor = transforms.ToTensor()(depth_pil) * 2 - 1  # [0,1] -> [-1,1]
+        depth_tensor = transforms.ToTensor()(depth_pil)
     elif depth_dir and os.path.exists(os.path.join(depth_dir, basename + '.npy')):
         depth = np.load(os.path.join(depth_dir, basename + '.npy'))
         depth = cv2.resize(depth, (size, size))
         depth = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8)
-        depth_tensor = torch.from_numpy(depth).unsqueeze(0) * 2 - 1  # [0,1] -> [-1,1]
+        depth_tensor = torch.from_numpy(depth).unsqueeze(0)
     elif midas_model is not None:
         depth = estimate_depth(img_pil_resized, midas_model, midas_transform, device)
-        depth_tensor = torch.from_numpy(depth).unsqueeze(0) * 2 - 1  # [0,1] -> [-1,1]
+        depth_tensor = torch.from_numpy(depth).unsqueeze(0)
     else:
-        depth_tensor = torch.zeros(1, size, size)  # [-1,1]范围，0对应原来的0.5
+        depth_tensor = torch.ones(1, size, size) * 0.5
     
     # 拼接（与官方一致: torch.cat([gt,depth_map,A_map],1)）
     x = torch.cat([img_tensor.unsqueeze(0), depth_tensor.unsqueeze(0), A_map_tensor.unsqueeze(0)], dim=1).to(device)
@@ -112,7 +111,6 @@ def process_single_image(img_path, netG, device, size, midas_model=None,
     # 注意：save_image的normalize=False表示不再次归一化，假设输入已经是[0,1]
     # 但Tanh输出是[-1,1]，所以需要先转换到[0,1]
     output = output.squeeze(0)
-    output = (output + 1.0) / 2.0  # [-1,1] -> [0,1]
     output = torch.clamp(output, 0, 1)
     
     # 转回PIL并resize到原尺寸
