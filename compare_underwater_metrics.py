@@ -18,6 +18,7 @@ import sys
 import numpy as np
 import cv2
 from pathlib import Path
+from tqdm import tqdm
 
 
 def calc_dark_channel(img, patch=15):
@@ -107,7 +108,7 @@ def main():
     old_all = {k: [] for k in calc_metrics(old_imgs[0])}
     new_all = {k: [] for k in calc_metrics(new_imgs[0])}
 
-    for i in range(n):
+    for i in tqdm(range(n), desc='计算指标中'):
         om = calc_metrics(old_imgs[i])
         nm = calc_metrics(new_imgs[i])
         for k in om:
